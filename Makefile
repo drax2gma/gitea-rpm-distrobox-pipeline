@@ -16,6 +16,7 @@ VARS      ?= BUILD_RUNNER DEPLOY_RUNNER ARTIFACT_BASE
 BUILD_RUNNER  ?= rhel7-ol7
 DEPLOY_RUNNER ?= deploy-host
 ARTIFACT_BASE ?= /home/runner/el7-artifacts
+export BUILD_RUNNER DEPLOY_RUNNER ARTIFACT_BASE
 
 # Gitea API token from the tea login (evaluated by the shell at recipe time).
 TOKEN = $$(python3 -c "import yaml,os;print(yaml.safe_load(open(os.path.expanduser('~/.config/tea/config.yml')))['logins'][0]['token'])")
@@ -76,7 +77,7 @@ vars-push: ## Upload $(VARS) from infra.env as Gitea repo variables
 .PHONY: vars-list
 vars-list: ## List Gitea repo variables
 	@curl -fsSL -H "Authorization: token $(TOKEN)" \
-	  "$(GITEA_URL)/api/v1/repos/$(REPO)/actions/variables" | jq -r '.[] | "\(.name)=\(.value)"'
+	  "$(GITEA_URL)/api/v1/repos/$(REPO)/actions/variables" | jq -r '.[] | "\(.name)=\(.data)"'
 
 .PHONY: status
 status: ## Show the last Gitea workflow runs

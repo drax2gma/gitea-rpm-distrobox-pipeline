@@ -222,9 +222,9 @@ journalctl --user -u act_runner -f               # verify + deploy jobs
   the system 1.0.2k collision; see the openssl35 section above.
 - **Artifact naming**: one artifact per package: `rpm-package-<pkg>`. The deploy job
   installs each package into the `ubi7` distrobox.
-- **Remotes**: the repo is pushed to both `gitea` and `github` (`example-org/cicd`,
-  private mirror) — `make ci` / `make push` handle both. Neither push triggers a
-  build: the workflow is manual (`make ci-build` / UI / API dispatch).
+- **Remotes**: `make ci` / `make push` push to every remote in `REMOTES`
+  (default `gitea github`). Neither push triggers a build: the workflow is manual
+  (`make ci-build` / UI / API dispatch).
 
 ## el7 traps found while building this
 

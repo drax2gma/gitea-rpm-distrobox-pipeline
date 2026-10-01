@@ -83,7 +83,7 @@ fetch)
     exit 0
   fi
 
-  : "${REPO:?REPO env required (e.g. example-org/cicd)}"
+  : "${REPO:?REPO env required (e.g. example-org/gitea-rpm-distrobox-pipeline)}"
   : "${TOKEN:?GITEA_TOKEN or GITHUB_TOKEN required}"
   mkdir -p "${ART_DIR}"
 

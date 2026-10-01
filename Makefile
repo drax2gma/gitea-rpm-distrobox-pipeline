@@ -1,12 +1,21 @@
 SHELL := /usr/bin/env bash
 .DEFAULT_GOAL := help
 
-REPO      ?= example-org/cicd
+# Local infra overlay (gitignored): REPO, GITEA_URL, BUILD_HOST, REMOTES,
+# BUILD_RUNNER, DEPLOY_RUNNER, ARTIFACT_BASE. See infra.env.example.
+-include infra.env
+
+REPO      ?= example-org/gitea-rpm-distrobox-pipeline
 GITEA_URL ?= https://gitea.example.com
 BUILD_HOST ?= build-host
 REMOTES   ?= gitea github
 WORKFLOW  ?= build-rpm.yml
 REF       ?= main
+# CI variables `make vars-push` uploads (read by `${{ vars.X || 'default' }}`).
+VARS      ?= BUILD_RUNNER DEPLOY_RUNNER ARTIFACT_BASE
+BUILD_RUNNER  ?= rhel7-ol7
+DEPLOY_RUNNER ?= deploy-host
+ARTIFACT_BASE ?= /home/runner/el7-artifacts
 
 # Gitea API token from the tea login (evaluated by the shell at recipe time).
 TOKEN = $$(python3 -c "import yaml,os;print(yaml.safe_load(open(os.path.expanduser('~/.config/tea/config.yml')))['logins'][0]['token'])")
@@ -44,6 +53,30 @@ ci-build: ## Trigger the Gitea build workflow (manual dispatch)
 	  -H "Content-Type: application/json" \
 	  -d "{\"ref\":\"$(REF)\"}" \
 	  "$(GITEA_URL)/api/v1/repos/$(REPO)/actions/workflows/$(WORKFLOW)/dispatches"
+
+.PHONY: vars-push
+vars-push: ## Upload $(VARS) from infra.env as Gitea repo variables
+	@for v in $(VARS); do \
+	  val="$${!v}"; \
+	  [ -n "$$val" ] || { echo "ERROR: $$v is empty" >&2; exit 2; }; \
+	  code=$$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+	    -H "Authorization: token $(TOKEN)" -H "Content-Type: application/json" \
+	    -d "{\"value\":\"$$val\"}" \
+	    "$(GITEA_URL)/api/v1/repos/$(REPO)/actions/variables/$$v"); \
+	  if [ "$$code" = "409" ]; then \
+	    curl -fsSL -o /dev/null -X PUT \
+	      -H "Authorization: token $(TOKEN)" -H "Content-Type: application/json" \
+	      -d "{\"value\":\"$$val\"}" \
+	      "$(GITEA_URL)/api/v1/repos/$(REPO)/actions/variables/$$v" || exit 1; \
+	    code=204; \
+	  fi; \
+	  case "$$code" in 201|204) echo "==> $$v=$$val";; *) echo "ERROR: $$v -> HTTP $$code" >&2; exit 1;; esac; \
+	done
+
+.PHONY: vars-list
+vars-list: ## List Gitea repo variables
+	@curl -fsSL -H "Authorization: token $(TOKEN)" \
+	  "$(GITEA_URL)/api/v1/repos/$(REPO)/actions/variables" | jq -r '.[] | "\(.name)=\(.value)"'
 
 .PHONY: status
 status: ## Show the last Gitea workflow runs

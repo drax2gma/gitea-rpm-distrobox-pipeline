@@ -8,6 +8,10 @@ on:
 
 # Packages built in parallel. Each has packaging/pkgs/<pkg>.env + packaging/<pkg>.spec.
 #   openssl35 OpenSSL 3.5 -> side-install /opt/openssl-3.5 (coexists with system 1.0.2k)
+#
+# Infra binding is generic: runner labels and the artifact staging dir come from
+# Gitea repository variables (`make vars-push`, see infra.env.example), each with
+# a portable default so the committed workflow runs anywhere.
 
 jobs:
   # ---------------------------------------------------- Oracle Linux 7 (RHEL7 ABI)
@@ -16,7 +20,7 @@ jobs:
   # switch runs-on to `rhel7` and register the container for entitlements (see README).
   build:
     name: build rpm (${{ matrix.pkg }}, oraclelinux7)
-    runs-on: rhel7-ol7
+    runs-on: ${{ vars.BUILD_RUNNER || 'rhel7-ol7' }}
     strategy:
       fail-fast: false
       matrix:
@@ -78,7 +82,7 @@ jobs:
   # into a clean ubi7 container. Runs on the deploy-host host runner (has node + podman).
   verify-ubi7:
     name: verify rpm (${{ matrix.pkg }}) on clean RHEL7 userland (ubi7)
-    runs-on: deploy-host
+    runs-on: ${{ vars.DEPLOY_RUNNER || 'deploy-host' }}
     needs: build
     strategy:
       fail-fast: false
@@ -124,7 +128,7 @@ jobs:
   #   ubi7  ubi7 derived base (RHEL 7.9 userland, no subscription; yum only)
   deploy:
     name: install ${{ matrix.pkg }} into ${{ matrix.box }} distrobox (deploy-host)
-    runs-on: deploy-host
+    runs-on: ${{ vars.DEPLOY_RUNNER || 'deploy-host' }}
     needs: build
     strategy:
       fail-fast: false
@@ -136,13 +140,13 @@ jobs:
             base_context: packaging/rhel7
     steps:
       - name: clean artifact dir
-        run: rm -rf /home/runner/el7-artifacts/${{ matrix.pkg }}-${{ matrix.box }}
+        run: rm -rf ${{ vars.ARTIFACT_BASE || '/home/runner/el7-artifacts' }}/${{ matrix.pkg }}-${{ matrix.box }}
 
       - name: download rpm artifact
         uses: actions/download-artifact@v3
         with:
           name: rpm-package-${{ matrix.pkg }}
-          path: /home/runner/el7-artifacts/${{ matrix.pkg }}-${{ matrix.box }}
+          path: ${{ vars.ARTIFACT_BASE || '/home/runner/el7-artifacts' }}/${{ matrix.pkg }}-${{ matrix.box }}
 
       # No actions/checkout here either: the host runner builds its remote from
       # github.server_url, which omits the /gitea subpath. Use the archive API.
@@ -169,7 +173,7 @@ jobs:
           CICD_BASE_CONTEXT: ${{ matrix.base_context }}
           PKG: ${{ matrix.pkg }}
           ARTIFACT_NAME: rpm-package-${{ matrix.pkg }}
-          ARTIFACT_DIR: /home/runner/el7-artifacts/${{ matrix.pkg }}-${{ matrix.box }}
+          ARTIFACT_DIR: ${{ vars.ARTIFACT_BASE || '/home/runner/el7-artifacts' }}/${{ matrix.pkg }}-${{ matrix.box }}
         run: |
           set -euo pipefail
           SCRIPT=/tmp/cicd-src/packaging/bin/install-in-distrobox.sh

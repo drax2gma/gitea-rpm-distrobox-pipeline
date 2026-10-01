@@ -1,9 +1,9 @@
-# cicd — Gitea Actions: build RPM → install into distrobox
+# gitea-rpm-distrobox-pipeline — Gitea Actions: build RPM → install into distrobox
 
 Generic pipeline that builds `.rpm` packages from pinned upstream sources on a
 clean **Oracle Linux 7** container (RHEL 7 ABI), then verifies them in a clean
 **ubi7** container and installs them into the persistent **`ubi7` distrobox** on
-`deploy-host`.
+a host-mode runner (`deploy-host` here is a placeholder label).
 
 Currently packages OpenSSL 3.5.9 (`openssl35`, side-installed to `/opt/openssl-3.5`).
 
@@ -36,6 +36,7 @@ upstream tarball (SHA256-verified)
 
 ```
 .gitea/workflows/build-rpm.yml    the pipeline (build → verify-ubi7 → deploy)
+infra.env.example                 template for the local, gitignored infra overlay
 packaging/pkgs/<name>.env         per-package source of truth: NAME/VERSION/TARBALL/SHA256/BINARY
 packaging/<name>.spec             per-package spec (openssl35 = Perl Configure)
 packaging/bin/build-rpm.sh        fetch + verify + rpmbuild -ba (PKG=<name>, RPMBUILD_EXTRA="--nodeps" on el7)
@@ -47,6 +48,39 @@ packaging/rhel7/Containerfile     ubi7 + OL7 repo → localhost/ubi7-base (ubi7 
 packaging/rhel7/macros.cmake-compat %cmake/%cmake_build/%cmake_install → cmake3
 templates/spec.tmpl               generic CMake/C spec template
 ```
+
+## Run it on your own infra
+
+The committed workflow is generic: runner labels and the artifact staging dir are
+read from **Gitea repository variables**, each with a portable default:
+
+```yaml
+runs-on: ${{ vars.BUILD_RUNNER  || 'rhel7-ol7' }}
+runs-on: ${{ vars.DEPLOY_RUNNER || 'deploy-host' }}
+path:    ${{ vars.ARTIFACT_BASE || '/home/runner/el7-artifacts' }}
+```
+
+Your real values never enter the repo. Copy the template to the gitignored
+`infra.env`, edit, and push the CI variables to the repo:
+
+```bash
+cp infra.env.example infra.env
+$EDITOR infra.env          # REPO, GITEA_URL, BUILD_HOST, remotes, runner labels, ARTIFACT_BASE
+make vars-push             # POST/PUT the CI variables as Gitea repo variables
+make vars-list             # show what Gitea has
+```
+
+`infra.env` is also included by the Makefile, so the local targets (`make push`,
+`make status`, `make ci-build`, `make logs`) use your repo/URLs too.
+
+### Requirements
+
+- A Gitea instance with Actions enabled and two self-hosted runners:
+  - a **docker-mode** runner with an `oraclelinux:7`-capable label (`rhel7-ol7`),
+  - a **host-mode** runner with `podman` + `distrobox` on the deploy host.
+  See [Runners](#runners) and `packaging/bin/setup-build-runner.sh`.
+- The workflow uses Gitea-specific contexts (`gitea.repository`, `gitea.server_url`)
+  and actions v3, so it is **Gitea Actions only** (not GitHub Actions).
 
 ## Packages
 
@@ -190,6 +224,8 @@ OL7/EPEL, but not from `rhel-7-server-*` (see the el7 targets section above).
 
 ```bash
 make help          # list targets
+make vars-push     # push CI variables from infra.env to Gitea
+make vars-list     # list the Gitea repo variables
 make status        # last Gitea workflow runs
 make logs          # tail the build-host runner log
 make logs-deploy   # tail the deploy-host runner log
@@ -225,6 +261,10 @@ journalctl --user -u act_runner -f               # verify + deploy jobs
 - **Remotes**: `make ci` / `make push` push to every remote in `REMOTES`
   (default `gitea github`). Neither push triggers a build: the workflow is manual
   (`make ci-build` / UI / API dispatch).
+- **Infra binding**: the workflow reads runner labels and the artifact dir from
+  Gitea repo variables (`make vars-push`); the local overlay `infra.env` is
+  gitignored. The committed defaults are generic (`rhel7-ol7`, `deploy-host`,
+  `/home/runner/el7-artifacts`).
 
 ## el7 traps found while building this
 

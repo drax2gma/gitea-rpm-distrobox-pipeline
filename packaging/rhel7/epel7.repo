@@ -1,0 +1,9 @@
+# EPEL 7 (archive) — provides cmake3 (3.17.5) and cmake3-data.
+# The base OS repos come from the image itself:
+#   real RHEL 7   -> rhel-7-server-rpms/-optional/-extras (via subscription)
+#   Oracle Linux 7 fallback -> ol7_latest (built into oraclelinux:7)
+# Only EPEL needs adding, because the base cmake on el7 is 2.8 (too old).
+[epel7]
+name=EPEL 7 (archive)
+baseurl=https://archives.fedoraproject.org/pub/archive/epel/7/$basearch/
+gpgcheck=0

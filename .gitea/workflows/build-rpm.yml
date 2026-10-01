@@ -1,0 +1,178 @@
+name: build-rpm
+
+on:
+  # Manual trigger only (workflow_dispatch). Run via `make ci-build`, the Gitea UI,
+  # or the API: POST /repos/{owner}/{repo}/actions/workflows/{wf}/dispatches.
+  # Pushing to main does NOT start a build.
+  workflow_dispatch:
+
+# Packages built in parallel. Each has packaging/pkgs/<pkg>.env + packaging/<pkg>.spec.
+#   openssl35 OpenSSL 3.5 -> side-install /opt/openssl-3.5 (coexists with system 1.0.2k)
+
+jobs:
+  # ---------------------------------------------------- Oracle Linux 7 (RHEL7 ABI)
+  # Binary-compatible RHEL 7 rebuild — full el7 toolchain (ol7_latest), no
+  # subscription; output .el7 RPM is RHEL 7-installable. To build on *real* RHEL 7,
+  # switch runs-on to `rhel7` and register the container for entitlements (see README).
+  build:
+    name: build rpm (${{ matrix.pkg }}, oraclelinux7)
+    runs-on: rhel7-ol7
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - pkg: openssl35
+    steps:
+      # No actions/checkout: el7 cannot run node20 JS actions (glibc 2.17) -> archive API.
+      - name: fetch repo
+        env:
+          REPO: ${{ gitea.repository }}
+          GITEA_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITEA_URL: ${{ gitea.server_url }}
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/src && mkdir -p /tmp/src
+          curl -fsSL -H "Authorization: token ${GITEA_TOKEN}" \
+            "${GITEA_URL}/api/v1/repos/${REPO}/archive/${GITHUB_SHA}.tar.gz" \
+            -o /tmp/src/repo.tar.gz
+          tar xzf /tmp/src/repo.tar.gz -C /tmp/src --strip-components=1
+
+      # Base OS repos (`ol7_latest`) are built into the Oracle Linux 7 image, so no
+      # subscription is needed. EPEL7 archive supplies cmake3 (base el7 cmake is 2.8).
+      - name: add EPEL7 archive repo
+        run: cp /tmp/src/packaging/rhel7/epel7.repo /etc/yum.repos.d/
+
+      # tsflags=noscripts: el7 rpm scriptlets spin at 100% CPU on the build-host host; the
+      # skipped install-info/ldconfig scriptlets are irrelevant in a disposable container.
+      # node runs the upload-artifact action *inside* this container (v3 declares node16).
+      - name: install build tools + node (yum)
+        run: |
+          yum install -y -q --setopt=tsflags=noscripts \
+            rpm-build rpmdevtools redhat-rpm-config gcc make cmake3 \
+            perl-core diffutils which tar curl
+          curl -fsSL https://rpm.nodesource.com/setup_16.x | bash -
+          yum install -y -q --setopt=tsflags=noscripts nodejs
+
+      - name: build rpm
+        env:
+          PKG: ${{ matrix.pkg }}
+          RPMBUILD_TOPDIR: /tmp/rpmbuild
+          RPMBUILD_EXTRA: --nodeps
+        run: |
+          cp /tmp/src/packaging/rhel7/macros.cmake-compat /etc/rpm/
+          bash /tmp/src/packaging/bin/build-rpm.sh
+
+      # upload-artifact@v3 declares node16 and runs on the runner host (build-host), not
+      # inside this container, so the el7 container itself needs no node.
+      - name: upload rpm artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: rpm-package-${{ matrix.pkg }}
+          path: /tmp/rpmbuild/RPMS/**/*.rpm
+          if-no-files-found: error
+
+  # ------------------------------------------------------ clean-room install check
+  # The Gitea 1.26 REST /actions/artifacts list endpoint returns empty, so we cannot
+  # fetch by API. Instead reuse the proven actions/download-artifact@v3 path (it uses
+  # act's internal artifact mechanism, which works across jobs/runners), then install
+  # into a clean ubi7 container. Runs on the deploy-host host runner (has node + podman).
+  verify-ubi7:
+    name: verify rpm (${{ matrix.pkg }}) on clean RHEL7 userland (ubi7)
+    runs-on: deploy-host
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - pkg: openssl35
+            rpmname: openssl35
+            verify: "/opt/openssl-3.5/bin/openssl version | grep -q 'OpenSSL 3.5.9'"
+    steps:
+      - name: download rpm artifact
+        uses: actions/download-artifact@v3
+        with:
+          name: rpm-package-${{ matrix.pkg }}
+          path: /tmp/verify-${{ matrix.pkg }}
+
+      - name: clean-room install + verify in ubi7
+        env:
+          ART_DIR: /tmp/verify-${{ matrix.pkg }}
+          RPM_NAME: ${{ matrix.rpmname }}
+          VERIFY: ${{ matrix.verify }}
+        run: |
+          set -euo pipefail
+          rpm=$(find "${ART_DIR}" -name '*.rpm' ! -name '*.src.rpm' | head -1)
+          [ -n "${rpm}" ] || { echo "ERROR: no rpm under ${ART_DIR}" >&2; exit 1; }
+          echo "==> rpm: ${rpm}"
+          chmod -R a+rX "${ART_DIR}"
+          # Free, unsubscribed RHEL7 userland. ubi7 ships rpm + bash; --noscripts because
+          # el7 install scriptlets spin on some hosts (and this package has none anyway).
+          podman run --rm --pull=never \
+            -v "${ART_DIR}:/pkg:ro,z" \
+            -e RPM_NAME="${RPM_NAME}" -e VERIFY="${VERIFY}" \
+            registry.access.redhat.com/ubi7/ubi bash -c '
+              set -e
+              rpm -ivh --noscripts $(find /pkg -name "*.rpm" ! -name "*.src.rpm" | head -1)
+              rpm -q "${RPM_NAME}"
+              rpm -V "${RPM_NAME}" && echo "rpm -V: OK"
+              sh -c "${VERIFY}"
+              echo "clean-room RHEL7 install: OK"
+            '
+
+  # --------------------------------------------------------------- deploy (deploy-host)
+  # Installs the ol7-built .el7 RPM into the persistent ubi7 distrobox:
+  #   ubi7  ubi7 derived base (RHEL 7.9 userland, no subscription; yum only)
+  deploy:
+    name: install ${{ matrix.pkg }} into ${{ matrix.box }} distrobox (deploy-host)
+    runs-on: deploy-host
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - pkg: openssl35
+            box: ubi7
+            image: localhost/ubi7-base:latest
+            base_context: packaging/rhel7
+    steps:
+      - name: clean artifact dir
+        run: rm -rf /home/runner/el7-artifacts/${{ matrix.pkg }}-${{ matrix.box }}
+
+      - name: download rpm artifact
+        uses: actions/download-artifact@v3
+        with:
+          name: rpm-package-${{ matrix.pkg }}
+          path: /home/runner/el7-artifacts/${{ matrix.pkg }}-${{ matrix.box }}
+
+      # No actions/checkout here either: the host runner builds its remote from
+      # github.server_url, which omits the /gitea subpath. Use the archive API.
+      - name: fetch deploy scripts
+        env:
+          REPO: ${{ gitea.repository }}
+          GITEA_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITEA_URL: ${{ gitea.server_url }}
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/cicd-src && mkdir -p /tmp/cicd-src
+          curl -fsSL -H "Authorization: token ${GITEA_TOKEN}" \
+            "${GITEA_URL}/api/v1/repos/${REPO}/archive/${GITHUB_SHA}.tar.gz" \
+            -o /tmp/cicd-src/repo.tar.gz
+          tar xzf /tmp/cicd-src/repo.tar.gz -C /tmp/cicd-src --strip-components=1
+
+      - name: bootstrap ${{ matrix.box }} and install
+        env:
+          REPO: ${{ gitea.repository }}
+          GITEA_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITEA_URL: ${{ gitea.server_url }}
+          CICD_BOX: ${{ matrix.box }}
+          CICD_IMAGE: ${{ matrix.image }}
+          CICD_BASE_CONTEXT: ${{ matrix.base_context }}
+          PKG: ${{ matrix.pkg }}
+          ARTIFACT_NAME: rpm-package-${{ matrix.pkg }}
+          ARTIFACT_DIR: /home/runner/el7-artifacts/${{ matrix.pkg }}-${{ matrix.box }}
+        run: |
+          set -euo pipefail
+          SCRIPT=/tmp/cicd-src/packaging/bin/install-in-distrobox.sh
+          bash "${SCRIPT}" bootstrap
+          bash "${SCRIPT}" fetch
+          bash "${SCRIPT}" install

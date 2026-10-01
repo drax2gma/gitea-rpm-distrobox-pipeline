@@ -1,0 +1,3 @@
+%cmake %{__cmake3} -S . -B build -DCMAKE_INSTALL_PREFIX=%{_prefix}
+%cmake_build %{__cmake3} --build build
+%cmake_install DESTDIR=%{buildroot} %{__cmake3} --install build

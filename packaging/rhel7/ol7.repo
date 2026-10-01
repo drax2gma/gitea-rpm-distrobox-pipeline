@@ -1,0 +1,4 @@
+[ol7_latest]
+name=Oracle Linux 7 (latest)
+baseurl=https://yum.oracle.com/repo/OracleLinux/OL7/latest/$basearch/
+gpgcheck=0

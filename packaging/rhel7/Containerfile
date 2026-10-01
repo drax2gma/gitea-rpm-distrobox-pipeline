@@ -1,0 +1,8 @@
+FROM registry.access.redhat.com/ubi7/ubi
+
+# ubi7 is a minimal runtime image: its repo (ubi-7) is missing base packages that
+# distrobox-init needs at first enter (fipscheck-lib, libedit, openssh-clients, ...),
+# and EPEL7 does not carry them either. Add the Oracle Linux 7 repo (same el7 ABI,
+# no subscription) so the distrobox bootstrap resolves. The image keeps its RHEL 7.9
+# userland identity.
+COPY ol7.repo /etc/yum.repos.d/ol7.repo

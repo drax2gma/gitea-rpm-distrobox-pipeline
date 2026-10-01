@@ -82,6 +82,54 @@ make vars-list             # show what Gitea has
 - The workflow uses Gitea-specific contexts (`gitea.repository`, `gitea.server_url`)
   and actions v3, so it is **Gitea Actions only** (not GitHub Actions).
 
+## Proof: verified on real infra
+
+This pipeline is not just a template — it is the workflow running in production on a
+private homelab, with the infra bound through the variable overlay above. Below is a
+sanitized run (identifiers, hosts and paths redacted). The committed workflow was
+dispatched unchanged; only the Gitea repository variables differed from the defaults.
+
+Environment: Gitea **1.26.2**, `act_runner` **v0.6.1** (docker-mode runner on the
+build host, host-mode runner on the deploy host), Gitea artifact protocol v3.
+
+| job | runner | overlay vars used | duration | result |
+|-----|--------|-------------------|----------|--------|
+| build rpm (openssl35, oraclelinux7) | docker-mode (`rhel7-ol7`) | `BUILD_RUNNER` | 3m 40s | success |
+| verify rpm (openssl35) on clean RHEL7 userland (ubi7) | host-mode | `DEPLOY_RUNNER` | 1s | success |
+| install openssl35 into ubi7 distrobox | host-mode | `DEPLOY_RUNNER`, `ARTIFACT_BASE` | 3s | success |
+
+Selected log lines (from the run that proved this pipeline end-to-end):
+
+```
+# build job
+Wrote: /tmp/rpmbuild/SRPMS/openssl35-3.5.9-1.el7.src.rpm
+Wrote: /tmp/rpmbuild/RPMS/x86_64/openssl35-3.5.9-1.el7.x86_64.rpm
+🏁  Job succeeded
+
+# verify-ubi7 job (clean-room, unsubscribed RHEL7 userland)
+rpm -V: OK
+clean-room RHEL7 install: OK
+
+# deploy job (persistent ubi7 distrobox on the host runner)
+Package openssl35.x86_64 0:3.5.9-1.el7 will be reinstalled
+==> verifying openssl35 in ubi7
+openssl35-3.5.9-1.el7.x86_64
+rpm -V: OK
+verify: OK
+```
+
+Artifact and installed result:
+
+```
+$ sha256sum openssl35-3.5.9-1.el7.x86_64.rpm
+ec4212f20c96d306d5f5d8d2ccfdd2d5550565ace6c4d1480949a667bee89a20
+
+$ distrobox enter ubi7 -- rpm -q openssl35
+openssl35-3.5.9-1.el7.x86_64
+$ distrobox enter ubi7 -- /opt/openssl-3.5/bin/openssl version
+OpenSSL 3.5.9 29 Sep 2026 (Library: OpenSSL 3.5.9 29 Sep 2026)
+```
+
 ## Packages
 
 Each package lives in `packaging/pkgs/<name>.env` (source pin) + `packaging/<name>.spec`.
